@@ -27,12 +27,40 @@ class KoboDrmRemover:
 		decryptedContents = contentAes.decrypt( contents )
 		return Padding.unpad( decryptedContents, AES.block_size, "pkcs7" )
 
+	def __TruncateFilename( self, filename: str, max_bytes: int = 65535 ) -> str:
+		"""Truncate filename to fit within ZIP format limits."""
+		filename_bytes = filename.encode( "utf-8" )
+		if len( filename_bytes ) <= max_bytes:
+			return filename
+		
+		# Truncate byte by byte, ensuring we don't break UTF-8 sequences
+		truncated = filename_bytes[ :max_bytes ]
+		while truncated:
+			try:
+				return truncated.decode( "utf-8" )
+			except UnicodeDecodeError:
+				# Remove last byte and try again
+				truncated = truncated[ :-1 ]
+		
+		# Fallback if something goes wrong
+		return filename[ :1000 ]
+
 	def RemoveDrm( self, inputPath: str, outputPath: str, contentKeys: Dict[ str, str ] ) -> None:
 		with zipfile.ZipFile( inputPath, "r" ) as inputZip:
-			with zipfile.ZipFile( outputPath, "w", zipfile.ZIP_DEFLATED ) as outputZip:
+			# Use allowZip64=True to support larger files and metadata
+			with zipfile.ZipFile( outputPath, "w", zipfile.ZIP_DEFLATED, allowZip64=True ) as outputZip:
 				for filename in inputZip.namelist():
 					contents = inputZip.read( filename )
 					contentKeyBase64 = contentKeys.get( filename, None )
 					if contentKeyBase64 is not None:
 						contents = self.__DecryptContents( contents, contentKeyBase64 )
-					outputZip.writestr( filename, contents )
+					
+					# Truncate filename to stay within ZIP format limits
+					truncated_filename = self.__TruncateFilename( filename )
+					
+					# Get the ZipInfo and strip extra fields that might be too large
+					zinfo = inputZip.getinfo( filename )
+					zinfo.filename = truncated_filename
+					zinfo.extra = b''  # Strip extra fields to avoid metadata overflow
+					
+					outputZip.writestr( zinfo, contents )
